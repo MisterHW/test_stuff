@@ -17,8 +17,40 @@
 
 #include "S5813A.h"
 
+#if defined(__LM4F120H5QR__) || defined(__TM4C123GH6PM__)
 
-#if defined(__MSP430_CPU__)
+
+// TI Stellaris / Tiva C LaunchPad defaults
+// ---------------------
+
+// LaunchPad runs at 3.3V 
+#include <driverlib/gpio.h>
+#define PIN_TEMPERATURE  PE_5
+
+// use internal reference
+#include "driverlib/sysctl.h"
+#include <driverlib/adc.h>
+#define ANALOG_REFERENCE ADC_REF_INT 
+#define setAnalogReference()\
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_ADC0);\
+    SysCtlPeripheralReset(SYSCTL_PERIPH_ADC0);\
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_ADC0)) {\
+    }\
+	ADCReferenceSet(ADC0_BASE, ANALOG_REFERENCE);\
+	\
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_ADC1);\
+    SysCtlPeripheralReset(SYSCTL_PERIPH_ADC1);\
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_ADC1)) {\
+    }\
+	ADCReferenceSet(ADC1_BASE, ANALOG_REFERENCE);
+
+
+// ADC maximum voltage at counts
+#define ADC_MAXIMUM_uV   3300000L
+#define ADC_COUNTS       4096L
+
+
+#elif defined(__MSP430_CPU__)
 
 // TI LaunchPad defaults
 // ---------------------
@@ -28,6 +60,7 @@
 
 // but use the 2.5V internal reference - seems to be better
 #define ANALOG_REFERENCE INTERNAL2V5
+#define setAnalogReference() analogReference(ANALOG_REFERENCE)
 
 // ADC maximum voltage at counts
 #define ADC_MAXIMUM_uV   2500000L
@@ -43,6 +76,7 @@
 
 // use the default 5V reference
 #define ANALOG_REFERENCE DEFAULT
+#define setAnalogReference() analogReference(ANALOG_REFERENCE)
 
 // ADC maximum voltage at counts
 #define ADC_MAXIMUM_uV   5000000L
@@ -80,7 +114,7 @@ S5813A_Class::S5813A_Class(int input_pin) : temperature_pin(input_pin) {
 // initialise the anolog system
 void S5813A_Class::begin(int input_pin) {
 	pinMode(input_pin, INPUT);
-	analogReference(ANALOG_REFERENCE);
+	setAnalogReference();
 	this->temperature_pin = input_pin;
 }
 
@@ -93,7 +127,7 @@ void S5813A_Class::end() {
 // not the ADC value, but the value that should be measured on the
 // sensor output pin
 long S5813A_Class::readVoltage() {
-	long vADC = analogRead(this->temperature_pin);
+	long long vADC = analogRead(this->temperature_pin);
 	return REV_PD((vADC * ADC_MAXIMUM_uV) / ADC_COUNTS);
 }
 

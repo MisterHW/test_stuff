@@ -19,7 +19,7 @@
 // Operation from reset:
 // * display version
 // * display compiled-in display setting
-// * display FLASH detected or not
+// * display EPD_FLASH detected or not
 // * display temperature (displayed before every image is changed)
 // * clear screen
 // * delay 5 seconds (flash LED)
@@ -30,19 +30,27 @@
 // * back to text display
 
 
+#include "inc/hw_ints.h"
+#include "inc/hw_types.h"
+#include "driverlib/gpio.h"
+#include "driverlib/interrupt.h"
+#include "driverlib/sysctl.h"
+#include "driverlib/timer.h"
+
 #include <inttypes.h>
 #include <ctype.h>
 
 // required libraries
 #include <SPI.h>
-#include <FLASH.h>
 #include <EPD.h>
+#include <EPD_FLASH.h>
 #include <S5813A.h>
+
 
 
 // Change this for different display size
 // supported sizes: 144 200 270
-#define SCREEN_SIZE 0
+#define SCREEN_SIZE 144
 
 // select two images from:  text_image text-hello cat aphrodite venus saturn
 #define IMAGE_1  text_image
@@ -116,7 +124,23 @@ PROGMEM const
 #undef unsigned
 
 
-#if defined(__MSP430_CPU__)
+#if defined(__LM4F120H5QR__) || defined(__TM4C123GH6PM__)
+
+// TI Stellaris LaunchPad IO layout
+#define Pin_TEMPERATURE PE_5
+#define Pin_PANEL_ON PA_2
+#define Pin_BORDER PA_4
+#define Pin_DISCHARGE PA_3
+#define Pin_PWM PA_6
+#define Pin_RESET PA_7
+#define Pin_BUSY PA_5
+#define Pin_EPD_CS PB_2
+#define Pin_EPD_FLASH_CS PE_0
+#define Pin_SW2 PE_4
+#define Pin_RED_LED PF_1 // PB_5
+
+
+#elif defined(__MSP430_CPU__)
 
 // TI LaunchPad IO layout
 const int Pin_TEMPERATURE = A4;
@@ -127,7 +151,7 @@ const int Pin_PWM = P2_1;
 const int Pin_RESET = P2_2;
 const int Pin_BUSY = P2_0;
 const int Pin_EPD_CS = P2_6;
-const int Pin_FLASH_CS = P2_7;
+const int Pin_EPD_FLASH_CS = P2_7;
 const int Pin_SW2 = P1_3;
 const int Pin_RED_LED = P1_0;
 
@@ -142,7 +166,7 @@ const int Pin_PWM = 5;
 const int Pin_RESET = 6;
 const int Pin_BUSY = 7;
 const int Pin_EPD_CS = 8;
-const int Pin_FLASH_CS = 9;
+const int Pin_EPD_FLASH_CS = 9;
 const int Pin_SW2 = 12;
 const int Pin_RED_LED = 13;
 
@@ -159,57 +183,63 @@ const int Pin_RED_LED = 13;
 EPD_Class EPD(EPD_SIZE, Pin_PANEL_ON, Pin_BORDER, Pin_DISCHARGE, Pin_PWM, Pin_RESET, Pin_BUSY, Pin_EPD_CS);
 
 
+
 // I/O setup
 void setup() {
-	pinMode(Pin_RED_LED, OUTPUT);
-	pinMode(Pin_SW2, INPUT);
-	pinMode(Pin_TEMPERATURE, INPUT);
-	pinMode(Pin_PWM, OUTPUT);
-	pinMode(Pin_BUSY, INPUT);
-	pinMode(Pin_RESET, OUTPUT);
-	pinMode(Pin_PANEL_ON, OUTPUT);
-	pinMode(Pin_DISCHARGE, OUTPUT);
-	pinMode(Pin_BORDER, OUTPUT);
-	pinMode(Pin_EPD_CS, OUTPUT);
-	pinMode(Pin_FLASH_CS, OUTPUT);
+  pinMode(Pin_RED_LED, OUTPUT);
+  pinMode(Pin_SW2, INPUT);
+  pinMode(Pin_TEMPERATURE, INPUT);
+  pinMode(Pin_PWM, OUTPUT);
+  pinMode(Pin_BUSY, INPUT);
+  pinMode(Pin_RESET, OUTPUT);
+  pinMode(Pin_PANEL_ON, OUTPUT);
+  pinMode(Pin_DISCHARGE, OUTPUT);
+  pinMode(Pin_BORDER, OUTPUT);
+  pinMode(Pin_EPD_CS, OUTPUT);
+  pinMode(Pin_EPD_FLASH_CS, OUTPUT);
 
-	digitalWrite(Pin_RED_LED, LOW);
-	digitalWrite(Pin_PWM, LOW);
-	digitalWrite(Pin_RESET, LOW);
-	digitalWrite(Pin_PANEL_ON, LOW);
-	digitalWrite(Pin_DISCHARGE, LOW);
-	digitalWrite(Pin_BORDER, LOW);
-	digitalWrite(Pin_EPD_CS, LOW);
-	digitalWrite(Pin_FLASH_CS, HIGH);
+  digitalWrite(Pin_RED_LED, LOW);
+  digitalWrite(Pin_PWM, LOW);
+  digitalWrite(Pin_RESET, LOW);
+  digitalWrite(Pin_PANEL_ON, LOW);
+  digitalWrite(Pin_DISCHARGE, LOW);
+  digitalWrite(Pin_BORDER, LOW);
+  digitalWrite(Pin_EPD_CS, LOW);
+  digitalWrite(Pin_EPD_FLASH_CS, HIGH);
 
-	Serial.begin(9600);
+  Serial.begin(9600);
 #if !defined(__MSP430_CPU__)
-	// wait for USB CDC serial port to connect.  Arduino Leonardo only
-	while (!Serial) {
-	}
+  // wait for USB CDC serial port to connect.  Arduino Leonardo only
+  while (!Serial) {
+  }
 #endif
-	Serial.println();
-	Serial.println();
-	Serial.println("Demo version: " DEMO_VERSION);
-	Serial.println("Display: " MAKE_STRING(EPD_SIZE));
-	Serial.println();
+  Serial.println();
+  Serial.println();
+  Serial.println("Demo version: " DEMO_VERSION);
+  Serial.println("Display: " MAKE_STRING(EPD_SIZE));
+  Serial.println();
 
-	FLASH.begin(Pin_FLASH_CS);
-	if (FLASH.available()) {
-		Serial.println("FLASH chip detected OK");
-	} else {
-		uint8_t maufacturer;
-		uint16_t device;
-		FLASH.info(&maufacturer, &device);
-		Serial.print("unsupported FLASH chip: MFG: 0x");
-		Serial.print(maufacturer, HEX);
-		Serial.print("  device: 0x");
-		Serial.print(device, HEX);
-		Serial.println();
-	}
+  SPI.begin();
+  SPI.setDataMode(SPI_MODE3);
+  SPI.setBitOrder(MSBFIRST);
+  SPI.setClockDivider(SPI_CLOCK_DIV8);
 
-	// configure temperature sensor
-	S5813A.begin(Pin_TEMPERATURE);
+  EPD_FLASH.begin(Pin_EPD_FLASH_CS);
+  if (EPD_FLASH.available()) {
+    Serial.println("EPD_FLASH chip detected OK");
+  } else {
+    uint8_t maufacturer;
+    uint16_t device;
+    EPD_FLASH.info(&maufacturer, &device);
+    Serial.print("unsupported EPD_FLASH chip: MFG: 0x");
+    Serial.print(maufacturer, HEX);
+    Serial.print("  device: 0x");
+    Serial.print(device, HEX);
+    Serial.println();
+  }
+
+  // configure temperature sensor
+  S5813A.begin(Pin_TEMPERATURE);
 }
 
 
@@ -218,45 +248,52 @@ static int state = 0;
 
 // main loop
 void loop() {
-	int temperature = S5813A.read();
-	Serial.print("Temperature = ");
-	Serial.print(temperature);
-	Serial.println(" Celcius");
+  int temperature = S5813A.read();
+  Serial.print("Temperature = ");
+  Serial.print(temperature);
+  Serial.print(" Celcius (");
+  Serial.print(S5813A.readVoltage());// analogRead(Pin_TEMPERATURE));
+  Serial.println(")");
 
-	EPD.begin(); // power up the EPD panel
-	EPD.setFactor(temperature); // adjust for current temperature
+  EPD.begin(); // power up the EPD panel
+  EPD.setFactor(temperature); // adjust for current temperature
 
-	int delay_counts = 50;
-	switch(state) {
-	default:
-	case 0:         // clear the screen
-		EPD.clear();
-		state = 1;
-		delay_counts = 5;  // reduce delay so first image come up quickly
-		break;
+  int delay_counts = 50;
+  switch (state) {
+    default:
+    case 0:         // clear the screen
+      EPD.clear();
+      state = 1;
+      delay_counts = 5;  // reduce delay so first image come up quickly
+      break;
 
-	case 1:         // clear -> text
-		EPD.image(IMAGE_1_BITS);
-		++state;
-		break;
+    case 1:         // clear -> text
+      EPD.image(IMAGE_1_BITS);
+      ++state;
+      break;
 
-	case 2:         // text -> picture
-		EPD.image(IMAGE_1_BITS, IMAGE_2_BITS);
-		++state;
-		break;
+    case 2:         // text -> picture
+      EPD.image(IMAGE_1_BITS, IMAGE_2_BITS);
+      ++state;
+      break;
 
-	case 3:        // picture -> text
-		EPD.image(IMAGE_2_BITS, IMAGE_1_BITS);
-		state = 2;  // backe to picture nex time
-		break;
-	}
-	EPD.end();   // power down the EPD panel
+    case 3:        // picture -> text
+      EPD.image(IMAGE_2_BITS, IMAGE_1_BITS);
+      state = 2;  // backe to picture nex time
+      break;
+  }
 
-	// flash LED for 5 seconds
-	for (int x = 0; x < delay_counts; ++x) {
-		digitalWrite(Pin_RED_LED, LED_ON);
-		delay(50);
-		digitalWrite(Pin_RED_LED, LED_OFF);
-		delay(50);
-	}
+
+  EPD.end();   // power down the EPD panel
+
+  // flash LED for 5 seconds
+  pinMode(Pin_RED_LED, OUTPUT);
+  for (int x = 0; x < delay_counts; ++x) {
+    digitalWrite(Pin_RED_LED, LED_ON);
+    delay(5);
+    digitalWrite(Pin_RED_LED, LED_OFF);
+    delay(95);
+  }
 }
+
+
