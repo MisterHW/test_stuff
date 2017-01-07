@@ -14,10 +14,10 @@
 */
 
 #define SPI_CLOCK_DIVIDER SPI_CLOCK_DIV8 // 80/8 MHz (<= 16 MHz)
-#define BAUD_RATE 230400
+#define BAUD_RATE 115200
 #define DDC_SYSTEM_CLOCK_HZ 16000000 // < 4 (4.8) MHz in LOWPWR (HIGHSPEED) mode, 16 (19.2) MHz in /4 mode
 #define DDC_SYSTEM_CLOCK_PRESCALER CLK_4X_DIVIDEBY4
-#define DEFAULT_CONV_RATE_SPS 500 // initial conversion rate (note one conversion is either side A or side B), observe DDC_CONV_RATE_HZ/2 square wave
+#define DEFAULT_CONV_RATE_SPS 100 // initial conversion rate (note one conversion is either side A or side B), observe DDC_CONV_RATE_HZ/2 square wave
 #define DEFAULT_ANALOG_RANGE_SELECT 4 // ANALOG_INPUT_RANGE_PC[DEFAULT_ANALOG_RANGE_SELECT] pC integrator range
 
 #include "SPI.h"
