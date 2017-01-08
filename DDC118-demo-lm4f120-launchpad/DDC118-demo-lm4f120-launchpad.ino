@@ -14,11 +14,11 @@
 */
 
 #define SPI_CLOCK_DIVIDER SPI_CLOCK_DIV8 // 80/8 MHz (<= 16 MHz)
-#define BAUD_RATE 115200
+#define BAUD_RATE 230400
 #define DDC_SYSTEM_CLOCK_HZ 16000000 // < 4 (4.8) MHz in LOWPWR (HIGHSPEED) mode, 16 (19.2) MHz in /4 mode
 #define DDC_SYSTEM_CLOCK_PRESCALER CLK_4X_DIVIDEBY4
-#define DEFAULT_CONV_RATE_SPS 100 // initial conversion rate (note one conversion is either side A or side B), observe DDC_CONV_RATE_HZ/2 square wave
-#define DEFAULT_ANALOG_RANGE_SELECT 4 // ANALOG_INPUT_RANGE_PC[DEFAULT_ANALOG_RANGE_SELECT] pC integrator range
+#define DEFAULT_CONV_RATE_SPS 500 // initial conversion rate (note one conversion is either side A or side B), observe DDC_CONV_RATE_HZ/2 square wave
+#define DEFAULT_ANALOG_RANGE_SELECT 7 // ANALOG_INPUT_RANGE_PC[DEFAULT_ANALOG_RANGE_SELECT] pC integrator range
 
 #include "SPI.h"
 //#include "driverlib/debug.h"
@@ -54,7 +54,7 @@
 
 volatile uint16_t CONV_RATE_SPS = DEFAULT_CONV_RATE_SPS; // up to 3125 samples/sec
 volatile uint16_t __CONV_RATE_SPS = CONV_RATE_SPS;
-uint8_t ANALOG_RANGE_SELECT = DEFAULT_ANALOG_RANGE_SELECT;
+volatile uint8_t ANALOG_RANGE_SELECT = DEFAULT_ANALOG_RANGE_SELECT;
 
 const uint16_t ANALOG_INPUT_RANGE_PC[8] = {12, 50, 100, 150, 200, 250, 300, 350}; // look-up for ANALOG_RANGE_SELECT measning
 #define CHANNELS_PER_DEVICE 8
@@ -73,6 +73,7 @@ const uint16_t ANALOG_INPUT_RANGE_PC[8] = {12, 50, 100, 150, 200, 250, 300, 350}
 
 #define TEST_INACTIVE LOW // under normal operation, inputs are connected. Under TEST mode, inputs are disconnected.
 #define TEST_ACTIVE HIGH // starts with next CONV transition. each \_/ toggle during integration adds approx. 11pC
+const uint16_t MAX_TEST_Q[8] = {1, 4, 8, 12, 16, 20, 24, 28 }; // MAX_TEST_Q[ANALOG_RANGE_SELECT] appropriate maximum number of 11pC test charge quanta
 
 #define FORMAT_20BIT HIGH
 #define FORMAT_16BIT LOW
@@ -83,9 +84,24 @@ typedef union {
   uint32_t ul;
 } TDDCChannelData;
 
+enum TTestMode {
+  DDC_TEST_OFF,
+  DDC_TEST_0Q,
+  DDC_TEST_1Q,
+  DDC_TEST_MAXQ
+};
+
+volatile uint8_t TEST_MODE = DDC_TEST_OFF;
+
 volatile TDDCChannelData DDCData[CHANNELS_PER_DEVICE] = {0};
+volatile TDDCChannelData DDCTestData[CHANNELS_PER_DEVICE][2] = {0};
+volatile int32_t DDCChannelOffsets[CHANNELS_PER_DEVICE][2] = {0};
 volatile uint8_t DDCDataSide;
+volatile uint16_t DDCTestCounter = 0;
+volatile uint16_t DDCTestAcquisitions = 0;
 volatile bool DDCDataUpdated = false;
+volatile bool DDCTestDataReady = false;
+
 
 
 void setup_T2CCP1_clock_source()
@@ -111,6 +127,7 @@ void setup_T2CCP1_clock_source()
 }
 
 
+// Timer interrupt indicates CONV needs to be toggled
 void Timer1IntHandler(void)
 {
   TimerIntClear(TIMER1_BASE, TIMER_TIMA_TIMEOUT);
@@ -131,6 +148,7 @@ void Timer1IntHandler(void)
   } else {
     GPIOPinWrite(GPIO_PORTB_BASE, GPIO_PIN_0, GPIO_PIN_0); // next CONV side A
   }
+
 }
 
 
@@ -208,6 +226,63 @@ void DDC118_read(uint8_t nChannels, volatile TDDCChannelData * data)
 }
 
 
+void DDCTestProcess(uint8_t side)
+{
+  if ((DDCTestAcquisitions == 0 ) || ( DDCTestCounter > DDCTestAcquisitions))
+  {
+    TEST_MODE = DDC_TEST_OFF;
+    DDCTestCounter = 0;
+    DDCTestDataReady = false;
+    return;
+  }
+
+  if (DDCTestCounter == 0)
+  {
+    // first execution
+    DDCTestDataReady = false;
+    uint8_t otherSide = side == CONV_SIDE_A ? CONV_SIDE_B : CONV_SIDE_A;
+    for (int i = 0; i < CHANNELS_PER_DEVICE; i++)
+    {
+      DDCTestData[i][side].ul = DDCData[i].ul;
+      DDCTestData[i][otherSide].ul = 0;
+    }
+    DDCTestCounter++;
+  }
+  else if (DDCTestCounter < DDCTestAcquisitions)
+  {
+    // subsequent execution
+    for (int i = 0; i < CHANNELS_PER_DEVICE; i++)
+    {
+      DDCTestData[i][side].ul += DDCData[i].ul;
+    }
+    DDCTestCounter++;
+  }
+
+  if (DDCTestCounter >= DDCTestAcquisitions)
+  {
+    // final execution
+    for (int s = 0; s < 2; s++)
+      for (int i = 0; i < CHANNELS_PER_DEVICE; i++)
+      {
+        DDCTestData[i][s].ul = DDCTestData[i][s].ul / (DDCTestAcquisitions >> 1);
+      }
+
+    TEST_MODE = DDC_TEST_OFF;
+    DDCTestDataReady = true;
+  }
+}
+
+
+void DDCTestStart(uint8_t mode, uint16_t numberOfAcquisitions)
+{
+  DDCTestAcquisitions = numberOfAcquisitions;
+  DDCTestCounter = 0;
+  DDCTestDataReady = false;
+  TEST_MODE = mode; // test process starts now
+}
+
+
+// DVALIDN falling edge triggers PORTBPinIntHandler() -> new data to be read
 void PORTBPinIntHandler(void)
 {
   unsigned long intStatus = GPIOIntStatus(GPIO_PORTB_BASE, GPIO_PIN_5);
@@ -216,6 +291,7 @@ void PORTBPinIntHandler(void)
   if (intStatus == GPIO_PIN_5 && (GPIOIntTypeGet(GPIO_PORTB_BASE, GPIO_PIN_5) == GPIO_FALLING_EDGE))
   {
 
+    // toggle LEDs to indicate activity
     if (GPIOPinRead(GPIO_PORTF_BASE, GPIO_PIN_3))
     {
       GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_3, 0);
@@ -231,6 +307,10 @@ void PORTBPinIntHandler(void)
       DDCDataSide = GPIOPinRead(GPIO_PORTB_BASE, GPIO_PIN_0) ? CONV_SIDE_B : CONV_SIDE_A; // note current side is not the side associated with the sample data
       DDC118_read(CHANNELS_PER_DEVICE, DDCData);
       DDCDataUpdated = true;
+
+      if (TEST_MODE != DDC_TEST_OFF) {
+        DDCTestProcess(DDCDataSide);
+      }
     }
   }
 }
@@ -242,7 +322,7 @@ void DDC118_init(void)
   pinMode(RANGE0, OUTPUT);  digitalWrite(RANGE0, RANGE_BIT_0(ANALOG_RANGE_SELECT));
   pinMode(RANGE1, OUTPUT);  digitalWrite(RANGE1, RANGE_BIT_1(ANALOG_RANGE_SELECT));
   pinMode(RANGE2, OUTPUT);  digitalWrite(RANGE2, RANGE_BIT_2(ANALOG_RANGE_SELECT));
-  pinMode(CLK_4X, OUTPUT);  digitalWrite(CLK_4X, DDC_SYSTEM_CLOCK_PRESCALER); 
+  pinMode(CLK_4X, OUTPUT);  digitalWrite(CLK_4X, DDC_SYSTEM_CLOCK_PRESCALER);
   pinMode(RESETN, OUTPUT);  digitalWrite(RESETN, LOW); delay(1); digitalWrite(RESETN, HIGH); delay(10);
   pinMode(LOWPWRN, OUTPUT); digitalWrite(LOWPWRN, LOWPWRN_HIGHSPEED);
   setup_T2CCP1_clock_source();
@@ -251,6 +331,57 @@ void DDC118_init(void)
   pinMode(TEST, OUTPUT);    digitalWrite(TEST, TEST_INACTIVE);
   setup_DVALIDN_interrupt();
   pinMode(FORMAT, OUTPUT);  digitalWrite(FORMAT, FORMAT_20BIT);
+}
+
+
+inline void waitForNewData(void)
+{
+  DDCDataUpdated = false;
+  while (!DDCDataUpdated) {};
+}
+
+
+void waitForSettling(void)
+{
+
+  Serial.print("# Settling \r\n# ");
+  for (int i = 0; i < 50; i++)
+  {
+    delay(50);
+    Serial.print(".");
+  }
+  Serial.println(" done.");
+}
+
+
+void acquireOffsets(bool disableInputs)
+{
+  Serial.println("# Initiiating baseline acquisitions (no-input scenario)");
+
+  if (disableInputs)
+  {
+    waitForNewData();
+    digitalWrite(TEST, TEST_ACTIVE);
+    waitForNewData();
+  }
+
+  DDCTestStart(DDC_TEST_0Q, 1024);
+  Serial.print("# ");
+  while (!DDCTestDataReady)
+  {
+    delay(50);
+    Serial.print(".");
+  }
+  Serial.println(" done.");
+  if (disableInputs)
+  {
+    digitalWrite(TEST, TEST_INACTIVE);
+  }
+
+  for (uint8_t k = 0; k < 2; k++)
+    for (int i = 0; i < CHANNELS_PER_DEVICE; i++) {
+      DDCChannelOffsets[i][k] = 4096 - DDCTestData[i][k].ul;
+    }
 }
 
 
@@ -275,7 +406,24 @@ void setup() {
   Serial.print("# System Frequency: ");
   Serial.print(SysCtlClockGet());
   Serial.println("Hz");
+  waitForSettling();
   Serial.println("# DDC118 BoosterPack demo: initialized");
+  GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_2, GPIO_PIN_2); // blue LED on
+  acquireOffsets(false);
+  GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_2, 0); // blue LED off
+  Serial.println("# Offsets: ");
+  for (uint8_t k = 0; k < 2; k++)
+  {
+    Serial.print("# ");
+    Serial.print(k);
+    for (uint8_t j = 0; j < CHANNELS_PER_DEVICE; j++)
+    {
+      Serial.print("\t");
+      Serial.print(DDCChannelOffsets[j][k]);
+    }
+    Serial.println();
+  }
+  Serial.println();
 }
 
 
@@ -284,20 +432,20 @@ void loop() {
   {
     DDCDataUpdated = false;
 
-    //if (DDCDataSide == 1) return; // debug: only output every other conversion to keep uncalibrated A/B side effects out of the equation
-
     // print data frame as tab separated row
     Serial.print(DDCDataSide);
     for (uint8_t j = 0; j < CHANNELS_PER_DEVICE; j++)
     {
       Serial.print("\t");
-      Serial.print(DDCData[j].ul);
+      // stream data with SideA/SideB and per-channel bias compensation
+      Serial.print((int32_t)DDCData[j].ul + DDCChannelOffsets[j][DDCDataSide]);
+      // stream raw samples
+      // Serial.print(DDCData[j].ul);
     }
 
     Serial.println();
   }
 }
-
 
 
 
