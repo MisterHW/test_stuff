@@ -18,7 +18,7 @@
 #define DDC_SYSTEM_CLOCK_HZ 16000000 // < 4 (4.8) MHz in LOWPWR (HIGHSPEED) mode, 16 (19.2) MHz in /4 mode
 #define DDC_SYSTEM_CLOCK_PRESCALER CLK_4X_DIVIDEBY4
 #define DEFAULT_CONV_RATE_SPS 500 // initial conversion rate (note one conversion is either side A or side B), observe DDC_CONV_RATE_HZ/2 square wave
-#define DEFAULT_ANALOG_RANGE_SELECT 7 // ANALOG_INPUT_RANGE_PC[DEFAULT_ANALOG_RANGE_SELECT] pC integrator range
+#define DEFAULT_ANALOG_RANGE_SELECT 6 // ANALOG_INPUT_RANGE_PC[DEFAULT_ANALOG_RANGE_SELECT] pC integrator range
 
 #include "SPI.h"
 //#include "driverlib/debug.h"
@@ -101,7 +101,6 @@ volatile uint16_t DDCTestCounter = 0;
 volatile uint16_t DDCTestAcquisitions = 0;
 volatile bool DDCDataUpdated = false;
 volatile bool DDCTestDataReady = false;
-
 
 
 void setup_T2CCP1_clock_source()
@@ -345,10 +344,13 @@ void waitForSettling(void)
 {
 
   Serial.print("# Settling \r\n# ");
-  for (int i = 0; i < 50; i++)
+  for (int i = 0; i < 20; i++)
   {
+    GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_2, GPIO_PIN_2);
     delay(50);
     Serial.print(".");
+    GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_2, 0);
+    delay(50);
   }
   Serial.println(" done.");
 }
@@ -389,7 +391,6 @@ void setup() {
   pinMode(SSI3CSN, OUTPUT);
   pinMode(SSI3CLK, OUTPUT);
   pinMode(SSI3RX, INPUT);
-
   SPI.setModule(3);
   SPI.begin();
   SPI.setDataMode(SPI_MODE0);
@@ -403,15 +404,15 @@ void setup() {
   IntMasterEnable();
 
   Serial.begin(BAUD_RATE);
-  Serial.print("# System Frequency: ");
+  Serial.print("\r\n# System Frequency: ");
   Serial.print(SysCtlClockGet());
-  Serial.println("Hz");
+  Serial.println(" Hz");
   waitForSettling();
   Serial.println("# DDC118 BoosterPack demo: initialized");
   GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_2, GPIO_PIN_2); // blue LED on
   acquireOffsets(false);
   GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_2, 0); // blue LED off
-  Serial.println("# Offsets: ");
+  Serial.println("# Offsets ");
   for (uint8_t k = 0; k < 2; k++)
   {
     Serial.print("# ");
@@ -424,6 +425,7 @@ void setup() {
     Serial.println();
   }
   Serial.println();
+  delay(500);
 }
 
 
@@ -446,6 +448,7 @@ void loop() {
     Serial.println();
   }
 }
+
 
 
 

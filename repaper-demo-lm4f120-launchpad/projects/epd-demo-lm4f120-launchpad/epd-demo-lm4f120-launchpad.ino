@@ -199,7 +199,7 @@ void setup() {
   pinMode(Pin_EPD_FLASH_CS, OUTPUT);
 
   digitalWrite(Pin_RED_LED, LOW);
-  digitalWrite(Pin_PWM, LOW);
+  analogWrite(Pin_PWM, 0);
   digitalWrite(Pin_RESET, LOW);
   digitalWrite(Pin_PANEL_ON, LOW);
   digitalWrite(Pin_DISCHARGE, LOW);
@@ -258,7 +258,7 @@ void loop() {
   EPD.begin(); // power up the EPD panel
   EPD.setFactor(temperature); // adjust for current temperature
 
-  int delay_counts = 50;
+  int delay_counts = 20;
   switch (state) {
     default:
     case 0:         // clear the screen
@@ -286,7 +286,7 @@ void loop() {
 
   EPD.end();   // power down the EPD panel
 
-  // flash LED for 5 seconds
+  // flash LED for 2 seconds
   pinMode(Pin_RED_LED, OUTPUT);
   for (int x = 0; x < delay_counts; ++x) {
     digitalWrite(Pin_RED_LED, LED_ON);

@@ -20,6 +20,7 @@
 
 #include "EPD.h"
 
+
 // delays - more consistent naming
 #define Delay_ms(ms) delay(ms)
 #define Delay_us(us) delayMicroseconds(us)
@@ -645,7 +646,17 @@ static void SPI_send(uint8_t cs_pin, const uint8_t *buffer, uint16_t length) {
 
 
 static void PWM_start(int pin) {
+	#if defined(__LM4F120H5QR__) || defined(__TM4C123GH6PM__)
+	for(int i=0; i<20000;i++)
+	{
+		digitalWrite(pin,HIGH);
+		Delay_us(5);
+		digitalWrite(pin,LOW);
+		Delay_us(5);
+	}
+	#else
 	analogWrite(pin, 128);  // 50% duty cycle
+	#endif
 }
 
 
